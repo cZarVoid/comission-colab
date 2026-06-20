@@ -11,10 +11,12 @@ set -euo pipefail
 #   DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 #   DISCORD_OUTPUT_FILE=output.txt
 #   DISCORD_MESSAGE_PREFIX="optional text"
+#   DISCORD_MIN_SIZE=7000000   # only forward seed-result lines with size >= this value
 #
 # Or as script parameters:
 #   ./colab_run.sh --webhook "https://discord.com/api/webhooks/..." --device 0
 #   ./colab_run.sh --discord-webhook "https://discord.com/api/webhooks/..." --discord-prefix "Seed output" --device 0
+#   ./colab_run.sh --webhook "https://discord.com/api/webhooks/..." --min-size 7000000 --device 0
 #
 # Parameters recognized by this wrapper are consumed. All other parameters are
 # passed through to ./main.
@@ -83,6 +85,20 @@ while [[ $# -gt 0 ]]; do
     --discord-username=*)
       DISCORD_USERNAME="${1#*=}"
       export DISCORD_USERNAME
+      shift
+      ;;
+    --min-size|--discord-min-size|--min-log-size|--discord-min-log-size)
+      if [[ $# -lt 2 || -z "${2:-}" ]]; then
+        echo "ERROR: $1 requires an integer minimum size." >&2
+        exit 2
+      fi
+      DISCORD_MIN_SIZE="$2"
+      export DISCORD_MIN_SIZE
+      shift 2
+      ;;
+    --min-size=*|--discord-min-size=*|--min-log-size=*|--discord-min-log-size=*)
+      DISCORD_MIN_SIZE="${1#*=}"
+      export DISCORD_MIN_SIZE
       shift
       ;;
     --no-discord)
@@ -175,6 +191,9 @@ done
 
 if [[ -n "${DISCORD_WEBHOOK_URL:-}" ]]; then
   echo "Discord forwarding enabled. Seed outputs will be tailed from $DISCORD_OUTPUT_FILE"
+  if [[ -n "${DISCORD_MIN_SIZE:-}" && "${DISCORD_MIN_SIZE}" != "0" ]]; then
+    echo "Discord minimum logged size: $DISCORD_MIN_SIZE"
+  fi
   if [[ "$explicit_output" == "0" ]]; then
     args+=("--output" "$DISCORD_OUTPUT_FILE")
   fi

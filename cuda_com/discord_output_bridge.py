@@ -1,20 +1,34 @@
 #!/usr/bin/env python3
-"""Tail the seed output file and forward new result lines to a Discord webhook.
+"""Tail the seed output file and forward matching result lines to Discord.
 
-The webhook URL must be supplied with the DISCORD_WEBHOOK_URL environment
-variable. This file intentionally does not contain any webhook secrets.
+Configuration is supplied with environment variables so webhook secrets do not
+need to be committed to GitHub.
+
+Required:
+  DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+
+Optional:
+  DISCORD_OUTPUT_FILE=output.txt
+  DISCORD_MESSAGE_PREFIX="Seed output"
+  DISCORD_MIN_SIZE=7000000
+
+When DISCORD_MIN_SIZE is set to a positive integer, only seed-result lines in
+this form are forwarded when the final size is at least that value:
+
+  <seed> at <x> <z> with <size>
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 # Keep the bridge's request shape close to the working notebook status sender.
@@ -26,6 +40,40 @@ POLL_SECONDS = float(os.environ.get("DISCORD_POLL_SECONDS", "1"))
 BATCH_LINES = max(1, int(os.environ.get("DISCORD_BATCH_LINES", "10")))
 BATCH_SECONDS = max(1.0, float(os.environ.get("DISCORD_BATCH_SECONDS", "5")))
 MAX_CONTENT_LEN = 1900  # Keep below Discord's 2000-character message limit.
+
+RESULT_LINE_RE = re.compile(
+    r"^\s*(?P<seed>-?\d+)\s+at\s+(?P<x>-?\d+)\s+(?P<z>-?\d+)\s+with\s+(?P<size>\d+)\s*$"
+)
+
+
+def _parse_positive_int_env(name: str, default: int = 0) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        print(f"WARNING: ignoring invalid {name}={raw!r}; expected an integer.", file=sys.stderr, flush=True)
+        return default
+
+
+MIN_SIZE = _parse_positive_int_env("DISCORD_MIN_SIZE", 0)
+
+
+def _extract_result_size(line: str) -> Optional[int]:
+    match = RESULT_LINE_RE.match(line)
+    if not match:
+        return None
+    return int(match.group("size"))
+
+
+def _should_forward(line: str) -> bool:
+    if not line.strip():
+        return False
+    if MIN_SIZE <= 0:
+        return True
+    size = _extract_result_size(line)
+    return size is not None and size >= MIN_SIZE
 
 
 def _chunk_body(lines: Iterable[str]) -> Iterable[str]:
@@ -120,13 +168,19 @@ def follow_file(path: Path) -> None:
         last_send = time.monotonic()
 
         print(f"Discord bridge watching {path}", flush=True)
+        if MIN_SIZE > 0:
+            print(f"Discord bridge filtering seed results with size >= {MIN_SIZE}", flush=True)
+        else:
+            print("Discord bridge minimum size filter disabled", flush=True)
+
         while True:
             line = handle.readline()
             now = time.monotonic()
 
             if line:
-                if line.strip():
-                    batch.append(line.rstrip("\n\r"))
+                clean_line = line.rstrip("\n\r")
+                if _should_forward(clean_line):
+                    batch.append(clean_line)
                 if len(batch) >= BATCH_LINES:
                     send_lines(batch)
                     batch.clear()
