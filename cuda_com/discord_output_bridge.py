@@ -41,8 +41,16 @@ BATCH_LINES = max(1, int(os.environ.get("DISCORD_BATCH_LINES", "10")))
 BATCH_SECONDS = max(1.0, float(os.environ.get("DISCORD_BATCH_SECONDS", "5")))
 MAX_CONTENT_LEN = 1900  # Keep below Discord's 2000-character message limit.
 
-RESULT_LINE_RE = re.compile(
+# The program prints human-readable lines to stdout:
+#   <seed> at <x> <z> with <size>
+# but writes raw space-separated lines to output.txt:
+#   <seed> <x> <z> <size>
+# The bridge tails output.txt, so the raw format must be accepted for min-size filtering.
+STDOUT_RESULT_LINE_RE = re.compile(
     r"^\s*(?P<seed>-?\d+)\s+at\s+(?P<x>-?\d+)\s+(?P<z>-?\d+)\s+with\s+(?P<size>\d+)\s*$"
+)
+OUTPUT_FILE_RESULT_LINE_RE = re.compile(
+    r"^\s*(?P<seed>-?\d+)\s+(?P<x>-?\d+)\s+(?P<z>-?\d+)\s+(?P<size>\d+)\s*$"
 )
 
 
@@ -60,11 +68,32 @@ def _parse_positive_int_env(name: str, default: int = 0) -> int:
 MIN_SIZE = _parse_positive_int_env("DISCORD_MIN_SIZE", 0)
 
 
+def _parse_result_line(line: str) -> Optional[dict]:
+    """Parse either stdout-style or output.txt-style seed result lines."""
+    for pattern in (STDOUT_RESULT_LINE_RE, OUTPUT_FILE_RESULT_LINE_RE):
+        match = pattern.match(line)
+        if match:
+            return {
+                "seed": int(match.group("seed")),
+                "x": int(match.group("x")),
+                "z": int(match.group("z")),
+                "size": int(match.group("size")),
+            }
+    return None
+
+
 def _extract_result_size(line: str) -> Optional[int]:
-    match = RESULT_LINE_RE.match(line)
-    if not match:
+    parsed = _parse_result_line(line)
+    if not parsed:
         return None
-    return int(match.group("size"))
+    return int(parsed["size"])
+
+
+def _format_result_line(line: str) -> str:
+    parsed = _parse_result_line(line)
+    if not parsed:
+        return line.rstrip("\n\r")
+    return f'{parsed["seed"]} at {parsed["x"]} {parsed["z"]} with {parsed["size"]}'
 
 
 def _should_forward(line: str) -> bool:
@@ -170,6 +199,7 @@ def follow_file(path: Path) -> None:
         print(f"Discord bridge watching {path}", flush=True)
         if MIN_SIZE > 0:
             print(f"Discord bridge filtering seed results with size >= {MIN_SIZE}", flush=True)
+            print("Discord bridge accepts both 'seed x z size' and 'seed at x z with size' formats", flush=True)
         else:
             print("Discord bridge minimum size filter disabled", flush=True)
 
@@ -180,7 +210,7 @@ def follow_file(path: Path) -> None:
             if line:
                 clean_line = line.rstrip("\n\r")
                 if _should_forward(clean_line):
-                    batch.append(clean_line)
+                    batch.append(_format_result_line(clean_line))
                 if len(batch) >= BATCH_LINES:
                     send_lines(batch)
                     batch.clear()
